@@ -90,6 +90,7 @@ class IntegratedBot:
                 "WORKER_LOG_MAX_BYTES": str(config.WORKER_LOG_MAX_BYTES),
                 "WORKER_LOG_BACKUPS": str(config.WORKER_LOG_BACKUPS),
                 "WORKER_MEMBERSHIP_MODE": config.WORKER_MEMBERSHIP_MODE,
+                "MATRIX_RTC_E2EE": config.MATRIX_RTC_E2EE,
             },
         )
         self.call_worker.set_event_handler(self._on_call_worker_event)
@@ -387,6 +388,7 @@ class IntegratedBot:
             f"Worker heartbeat: {self.config.WORKER_HEARTBEAT_INTERVAL:.1f}s",
             f"Stop-timeout recovery: {self.config.WORKER_STOP_TIMEOUT_RESTART_THRESHOLD}",
             f"Worker membership mode: {self.config.WORKER_MEMBERSHIP_MODE}",
+            f"MatrixRTC E2EE: {self.config.MATRIX_RTC_E2EE}",
             f"Playlist max tracks/request: {self.config.PLAYLIST_MAX_TRACKS_PER_REQUEST}",
             f"Playlist background concurrency: {self.config.PLAYLIST_BACKGROUND_LOAD_CONCURRENCY}",
             f"History limit: {self.config.HISTORY_LIMIT}",

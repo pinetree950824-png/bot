@@ -40,6 +40,7 @@ class Config:
         "worker.skip_cooldown_seconds": 1.0,
         "worker.stop_timeout_restart_threshold": 2,
         "worker.membership_mode": "legacy",
+        "worker.matrix_rtc_e2ee": "auto",
         "worker.log_max_bytes": 2_000_000,
         "worker.log_backups": 5,
         "playlist.max_tracks_per_request": 50,
@@ -254,6 +255,21 @@ class Config:
         if self.WORKER_MEMBERSHIP_MODE not in {"matrix2_auto", "matrix2", "legacy"}:
             raise ValueError(
                 "WORKER_MEMBERSHIP_MODE/worker.membership_mode must be one of: matrix2_auto, matrix2, legacy"
+            )
+
+        self.MATRIX_RTC_E2EE = (
+            self._get_str(
+                "MATRIX_RTC_E2EE",
+                "worker",
+                "matrix_rtc_e2ee",
+                default=self.DEFAULTS["worker.matrix_rtc_e2ee"],
+            )
+            or self.DEFAULTS["worker.matrix_rtc_e2ee"]
+        )
+        self.MATRIX_RTC_E2EE = self.MATRIX_RTC_E2EE.strip().lower()
+        if self.MATRIX_RTC_E2EE not in {"auto", "required", "disabled"}:
+            raise ValueError(
+                "MATRIX_RTC_E2EE/worker.matrix_rtc_e2ee must be one of: auto, required, disabled"
             )
 
         self.PLAYLIST_MAX_TRACKS_PER_REQUEST = self._get_nonnegative_int(

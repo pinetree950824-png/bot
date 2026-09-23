@@ -16,6 +16,7 @@ const {
     TrackSource,
     dispose,
 } = require("@livekit/rtc-node");
+const { MatrixRtcE2eeController } = require("./matrix_rtc_e2ee");
 
 rootLogger.setLevel("WARN");
 
@@ -94,7 +95,7 @@ function shouldFallbackStickyJoin(mode, error) {
     return normalized.includes("unsupportedstickyeventsendpointerror") || normalized.includes("sticky events");
 }
 
-function joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, membershipMode) {
+function joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, membershipMode, extraOptions = {}) {
     session.joinRTCSession(
         { userId, deviceId, memberId },
         [livekitTransport],
@@ -102,6 +103,7 @@ function joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekit
         {
             callIntent: "audio",
             unstableSendStickyEvents: useStickyMembershipEvents(membershipMode),
+            ...extraOptions,
         },
     );
 }
@@ -385,7 +387,7 @@ async function getLivekitConfig(client, livekitServiceUrl, roomId, membership, m
 }
 
 class CallWorker {
-    constructor({ matrixClient, rtcSession, livekitServiceUrl, roomId, userId, deviceId, membershipMode }) {
+    constructor({ matrixClient, rtcSession, livekitServiceUrl, roomId, userId, deviceId, membershipMode, e2eeController = null }) {
         this.matrixClient = matrixClient;
         this.rtcSession = rtcSession;
         this.livekitServiceUrl = livekitServiceUrl;
@@ -393,6 +395,7 @@ class CallWorker {
         this.userId = userId;
         this.deviceId = deviceId;
         this.membershipMode = membershipMode;
+        this.e2eeController = e2eeController;
 
         this.livekitRoom = null;
         this.audioSource = null;
@@ -486,8 +489,16 @@ class CallWorker {
         }
 
         const room = new Room();
-        await room.connect(config.url, config.jwt, { autoSubscribe: true, dynacast: true });
-        logLine(`livekit connected auth_mode=${config._auth_mode || "unknown"}`);
+        const connectOptions = { autoSubscribe: true, dynacast: true };
+        if (this.e2eeController && this.e2eeController.isEnabled) {
+            connectOptions.encryption = this.e2eeController.getLivekitEncryptionOptions();
+        }
+        await room.connect(config.url, config.jwt, connectOptions);
+        logLine(`livekit connected auth_mode=${config._auth_mode || "unknown"} e2ee=${Boolean(this.e2eeController && this.e2eeController.isEnabled)}`);
+
+        if (this.e2eeController && this.e2eeController.isEnabled) {
+            this.e2eeController.attachLivekitRoom(room);
+        }
 
         this.audioSource = new AudioSource(SAMPLE_RATE, CHANNELS);
         this.audioTrack = LocalAudioTrack.createAudioTrack("musicbot-audio", this.audioSource);
@@ -773,6 +784,10 @@ class CallWorker {
     async shutdown() {
         await this.stopPlayback();
 
+        if (this.e2eeController) {
+            this.e2eeController.cleanup();
+        }
+
         if (this.audioTrack) {
             await this.audioTrack.close();
             this.audioTrack = null;
@@ -822,7 +837,8 @@ async function main() {
     logLine(
         `audio settings normalize=${audioSettings.normalizeAudio} fade_in_ms=${audioSettings.fadeInMs} volume_percent=${audioSettings.volumePercent}`,
     );
-    logLine(`worker start room=${roomId} membership_mode=${membershipMode}`);
+    const e2eeMode = (process.env.MATRIX_RTC_E2EE || "auto").trim().toLowerCase();
+    logLine(`worker start room=${roomId} membership_mode=${membershipMode} e2ee_mode=${e2eeMode}`);
 
     const client = createClient({
         baseUrl: homeserver,
@@ -831,6 +847,20 @@ async function main() {
         deviceId,
         store: new MemoryStore(),
     });
+
+    if (e2eeMode !== "disabled") {
+        try {
+            await client.initRustCrypto({ useIndexedDB: false });
+            logLine("matrix rust crypto initialized");
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (e2eeMode === "required") {
+                throw new Error(`Matrix crypto initialization failed in required mode: ${message}`);
+            }
+            logLine(`crypto init failed; continuing without crypto: ${message}`);
+        }
+    }
+
     client.startClient({ initialSyncLimit: 1, lazyLoadMembers: true });
     await waitForPrepared(client, 45_000);
 
@@ -842,6 +872,20 @@ async function main() {
     sessionManager.start();
 
     const session = sessionManager.getRoomSession(room);
+
+    const e2eeController = new MatrixRtcE2eeController({
+        matrixClient: client,
+        rtcSession: session,
+        roomId,
+        userId,
+        deviceId,
+        mode: e2eeMode,
+        logger: logLine,
+    });
+    await e2eeController.checkAndInitCrypto();
+    if (e2eeController.isEnabled) {
+        e2eeController.bindRtcSessionEvents();
+    }
 
     let effectiveMembershipMode = membershipMode;
     session.on(MatrixRTCSessionEvent.MembershipManagerError, (error) => {
@@ -859,7 +903,8 @@ async function main() {
         livekit_service_url: livekitServiceUrl,
     };
 
-    joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, effectiveMembershipMode);
+    const rtcJoinConfig = e2eeController.getJoinSessionOptions(effectiveMembershipMode);
+    joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, effectiveMembershipMode, rtcJoinConfig);
 
     try {
         await waitForJoinState(session, 20_000);
@@ -880,7 +925,8 @@ async function main() {
         }
 
         effectiveMembershipMode = "legacy";
-        joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, effectiveMembershipMode);
+        const retryJoinConfig = e2eeController.getJoinSessionOptions(effectiveMembershipMode);
+        joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, effectiveMembershipMode, retryJoinConfig);
         await waitForJoinState(session, 20_000);
         await waitForJoinOutcome(session, userId, deviceId, 20_000);
     }
@@ -893,6 +939,7 @@ async function main() {
         userId,
         deviceId,
         membershipMode: effectiveMembershipMode,
+        e2eeController,
     });
 
     await worker.connectLivekit();
