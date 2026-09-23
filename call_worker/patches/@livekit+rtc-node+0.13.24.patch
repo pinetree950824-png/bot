@@ -1,0 +1,107 @@
+diff --git a/node_modules/@livekit/rtc-node/dist/e2ee.cjs b/node_modules/@livekit/rtc-node/dist/e2ee.cjs
+index 0c30f2b..82f20d4 100644
+--- a/node_modules/@livekit/rtc-node/dist/e2ee.cjs
++++ b/node_modules/@livekit/rtc-node/dist/e2ee.cjs
+@@ -117,6 +117,26 @@ class KeyProvider {
+       }
+     });
+   }
++  setRawKey(participantIdentity, rawKey, keyIndex = 0) {
++    const keyBytes = rawKey instanceof Uint8Array ? rawKey : new Uint8Array(rawKey);
++    const req = new import_e2ee_pb.E2eeRequest({
++      roomHandle: this.roomHandle,
++      message: {
++        case: "setKey",
++        value: new import_e2ee_pb.SetKeyRequest({
++          participantIdentity,
++          key: keyBytes,
++          keyIndex: typeof keyIndex === "number" ? keyIndex : 0
++        })
++      }
++    });
++    import_ffi_client.FfiClient.instance.request({
++      message: {
++        case: "e2ee",
++        value: req
++      }
++    });
++  }
+   exportKey(participantIdentity, keyIndex) {
+     const req = new import_e2ee_pb.E2eeRequest({
+       roomHandle: this.roomHandle,
+diff --git a/node_modules/@livekit/rtc-node/dist/e2ee.d.ts b/node_modules/@livekit/rtc-node/dist/e2ee.d.ts
+index 4257a7c..fde0e4d 100644
+--- a/node_modules/@livekit/rtc-node/dist/e2ee.d.ts
++++ b/node_modules/@livekit/rtc-node/dist/e2ee.d.ts
+@@ -22,6 +22,7 @@ declare class KeyProvider {
+     exportSharedKey(keyIndex: number): Uint8Array;
+     ratchetSharedKey(keyIndex: number): Uint8Array;
+     setKey(participantIdentity: string, keyIndex: number): void;
++    setRawKey(participantIdentity: string, rawKey: Uint8Array, keyIndex?: number): void;
+     exportKey(participantIdentity: string, keyIndex: number): Uint8Array;
+     ratchetKey(participantIdentity: string, keyIndex: number): Uint8Array;
+ }
+diff --git a/node_modules/@livekit/rtc-node/dist/e2ee.js b/node_modules/@livekit/rtc-node/dist/e2ee.js
+index cf00c74..47a510e 100644
+--- a/node_modules/@livekit/rtc-node/dist/e2ee.js
++++ b/node_modules/@livekit/rtc-node/dist/e2ee.js
+@@ -102,6 +102,26 @@ class KeyProvider {
+       }
+     });
+   }
++  setRawKey(participantIdentity, rawKey, keyIndex = 0) {
++    const keyBytes = rawKey instanceof Uint8Array ? rawKey : new Uint8Array(rawKey);
++    const req = new E2eeRequest({
++      roomHandle: this.roomHandle,
++      message: {
++        case: "setKey",
++        value: new SetKeyRequest({
++          participantIdentity,
++          key: keyBytes,
++          keyIndex: typeof keyIndex === "number" ? keyIndex : 0
++        })
++      }
++    });
++    FfiClient.instance.request({
++      message: {
++        case: "e2ee",
++        value: req
++      }
++    });
++  }
+   exportKey(participantIdentity, keyIndex) {
+     const req = new E2eeRequest({
+       roomHandle: this.roomHandle,
+diff --git a/node_modules/@livekit/rtc-node/src/e2ee.ts b/node_modules/@livekit/rtc-node/src/e2ee.ts
+index 2de0025..1ae9649 100644
+--- a/node_modules/@livekit/rtc-node/src/e2ee.ts
++++ b/node_modules/@livekit/rtc-node/src/e2ee.ts
+@@ -143,6 +143,28 @@ export class KeyProvider {
+     });
+   }
+ 
++  setRawKey(participantIdentity: string, rawKey: Uint8Array, keyIndex: number = 0) {
++    const keyBytes = rawKey instanceof Uint8Array ? rawKey : new Uint8Array(rawKey);
++    const req = new E2eeRequest({
++      roomHandle: this.roomHandle,
++      message: {
++        case: 'setKey',
++        value: new SetKeyRequest({
++          participantIdentity: participantIdentity,
++          key: keyBytes,
++          keyIndex: typeof keyIndex === 'number' ? keyIndex : 0,
++        }),
++      },
++    });
++
++    FfiClient.instance.request({
++      message: {
++        case: 'e2ee',
++        value: req,
++      },
++    });
++  }
++
+   exportKey(participantIdentity: string, keyIndex: number): Uint8Array {
+     const req = new E2eeRequest({
+       roomHandle: this.roomHandle,

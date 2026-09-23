@@ -1,58 +1,5 @@
-const path = require("path");
 const { MatrixRTCSessionEvent } = require("matrix-js-sdk/lib/matrixrtc");
 const { EncryptionType, KeyProvider } = require("@livekit/rtc-node");
-
-// Load LiveKit protobuf and FFI client to support per-participant key setting
-let FfiClient = null;
-let E2eeRequest = null;
-let SetKeyRequest = null;
-let SetSharedKeyRequest = null;
-
-try {
-    const ffiPath = path.resolve(__dirname, "../node_modules/@livekit/rtc-node/dist/ffi_client.cjs");
-    const protoPath = path.resolve(__dirname, "../node_modules/@livekit/rtc-node/dist/proto/e2ee_pb.cjs");
-    FfiClient = require(ffiPath).FfiClient;
-    const proto = require(protoPath);
-    E2eeRequest = proto.E2eeRequest;
-    SetKeyRequest = proto.SetKeyRequest;
-    SetSharedKeyRequest = proto.SetSharedKeyRequest;
-
-    // Monkey-patch KeyProvider.prototype.setKey to correctly pass key bytes
-    if (KeyProvider && KeyProvider.prototype && typeof KeyProvider.prototype.setKey === "function") {
-        const originalSetKey = KeyProvider.prototype.setKey;
-        KeyProvider.prototype.setKey = function (participantIdentity, key, keyIndex = 0) {
-            let actualKey = key;
-            let actualIndex = keyIndex;
-            if (typeof key === "number" && !(key instanceof Uint8Array) && !Buffer.isBuffer(key)) {
-                actualIndex = key;
-                actualKey = undefined;
-            }
-            if ((actualKey instanceof Uint8Array || Buffer.isBuffer(actualKey)) && FfiClient && E2eeRequest && SetKeyRequest) {
-                const req = new E2eeRequest({
-                    roomHandle: this.roomHandle,
-                    message: {
-                        case: "setKey",
-                        value: new SetKeyRequest({
-                            participantIdentity,
-                            key: actualKey instanceof Uint8Array ? actualKey : new Uint8Array(actualKey),
-                            keyIndex: typeof actualIndex === "number" ? actualIndex : 0,
-                        }),
-                    },
-                });
-                FfiClient.instance.request({
-                    message: {
-                        case: "e2ee",
-                        value: req,
-                    },
-                });
-                return;
-            }
-            return originalSetKey.call(this, participantIdentity, actualIndex);
-        };
-    }
-} catch (err) {
-    // Best effort patching; fallback to existing methods if direct cjs resolution fails
-}
 
 function parseBool(value, defaultValue = false) {
     if (value === undefined || value === null) return defaultValue;
@@ -100,6 +47,24 @@ class MatrixRtcE2eeController {
     }
 
     /**
+     * Handles an E2EE failure according to current mode.
+     * In "required" mode, this throws a fatal Error to abort call joining.
+     * In "auto" mode, it logs a warning and gracefully disables E2EE.
+     * @param {string} reason
+     */
+    handleE2eeFailure(reason) {
+        if (this.mode === "required") {
+            const errorMsg = `MatrixRTC E2EE fatal error (required mode): ${reason}`;
+            this.log(`CRITICAL: ${errorMsg}`);
+            throw new Error(errorMsg);
+        }
+
+        this.log(`warning: E2EE failure (${reason}); falling back to non-E2EE`);
+        this.enabled = false;
+        return false;
+    }
+
+    /**
      * Initializes Matrix crypto and determines whether E2EE should be enabled.
      * @returns {Promise<boolean>} Whether E2EE is active for this call session
      */
@@ -118,12 +83,7 @@ class MatrixRtcE2eeController {
                 this.log("matrix rust crypto initialized successfully");
             } catch (err) {
                 const message = err instanceof Error ? err.message : String(err);
-                if (this.mode === "required") {
-                    throw new Error(`Matrix crypto initialization failed in required mode: ${message}`);
-                }
-                this.log(`warning: crypto init failed (${message}); falling back to non-E2EE`);
-                this.enabled = false;
-                return false;
+                return this.handleE2eeFailure(`Matrix crypto initialization failed: ${message}`);
             }
         }
 
@@ -219,6 +179,23 @@ class MatrixRtcE2eeController {
     }
 
     /**
+     * Resolves the canonical participant identity for LiveKit.
+     * @param {string} rtcBackendIdentity
+     * @param {Object} [membership]
+     * @returns {string|null}
+     */
+    resolveParticipantIdentity(rtcBackendIdentity, membership) {
+        if (rtcBackendIdentity) return rtcBackendIdentity;
+        if (membership?.userId && membership?.deviceId) {
+            return `${membership.userId}:${membership.deviceId}`;
+        }
+        if (membership?.userId) {
+            return membership.userId;
+        }
+        return null;
+    }
+
+    /**
      * Handles newly received or rotated encryption keys from MatrixRTC.
      * @param {Uint8Array} keyBin
      * @param {number} keyIndex
@@ -233,23 +210,26 @@ class MatrixRtcE2eeController {
             membership.deviceId === this.deviceId
         );
 
-        // Security check: NEVER log keyBin bytes or base64. Only log metadata.
-        const participantLabel = rtcBackendIdentity || (membership ? `${membership.userId}:${membership.deviceId}` : "unknown");
-        this.log(`media key update v=${this.keyVersion} index=${keyIndex} is_own=${isOwnKey} participant=${participantLabel}`);
+        const participantIdentity = this.resolveParticipantIdentity(rtcBackendIdentity, membership);
+        const participantLabel = participantIdentity || "unknown";
+
+        // Security check: NEVER log raw keyBin bytes or secret material. Only log metadata.
+        this.log(`MatrixRTC media key received: participant=${participantLabel} keyIndex=${keyIndex} is_own=${isOwnKey} v=${this.keyVersion}`);
 
         if (this.livekitRoom && this.keyProvider) {
             this.applyKey(rtcBackendIdentity, membership, keyBin, keyIndex, isOwnKey);
         } else {
-            // Buffer keys until livekitRoom and keyProvider are attached
-            const mapKey = `${membership?.userId || ""}:${membership?.deviceId || ""}:${keyIndex}`;
-            this.bufferedKeys.set(mapKey, {
+            // Buffer keys until LiveKit is connected and keyProvider attached
+            // Deduplication key: participantIdentity + ":" + keyIndex
+            const bufferKey = `${participantLabel}:${keyIndex}`;
+            this.bufferedKeys.set(bufferKey, {
                 rtcBackendIdentity,
                 membership,
                 keyBin,
                 keyIndex,
                 isOwnKey,
             });
-            this.log(`buffered media key for participant=${participantLabel} (total_buffered=${this.bufferedKeys.size})`);
+            this.log(`buffered media key for participant=${participantLabel} keyIndex=${keyIndex} (total_buffered=${this.bufferedKeys.size})`);
         }
     }
 
@@ -261,26 +241,29 @@ class MatrixRtcE2eeController {
         if (!this.enabled || !livekitRoom) return;
 
         this.livekitRoom = livekitRoom;
-        if (livekitRoom.e2eeManager) {
-            this.keyProvider = livekitRoom.e2eeManager.keyProvider;
-            try {
-                livekitRoom.e2eeManager.setEnabled(true);
-                this.log("LiveKit E2EE manager enabled successfully");
-            } catch (err) {
-                this.log(`error enabling LiveKit E2EEManager: ${err instanceof Error ? err.message : String(err)}`);
-            }
+
+        if (!livekitRoom.e2eeManager) {
+            return this.handleE2eeFailure("LiveKit E2EE manager is unavailable");
         }
 
-        // Flush buffered keys
-        if (this.bufferedKeys.size > 0) {
-            this.log(`flushing ${this.bufferedKeys.size} buffered media keys into LiveKit key provider`);
-            for (const item of this.bufferedKeys.values()) {
-                this.applyKey(item.rtcBackendIdentity, item.membership, item.keyBin, item.keyIndex, item.isOwnKey);
-            }
-            this.bufferedKeys.clear();
+        this.keyProvider = livekitRoom.e2eeManager.keyProvider;
+
+        if (!this.keyProvider) {
+            return this.handleE2eeFailure("LiveKit E2EE key provider is unavailable");
         }
 
-        // Re-emit any tracked keys from MatrixRTC session to ensure completeness
+        try {
+            livekitRoom.e2eeManager.setEnabled(true);
+            this.log("LiveKit E2EE manager enabled successfully");
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return this.handleE2eeFailure(`Failed to enable LiveKit E2EE manager: ${msg}`);
+        }
+
+        // Flush keys that arrived before LiveKit connected.
+        this.flushBufferedKeys();
+
+        // Re-emit any tracked keys from MatrixRTC session to ensure state completeness
         if (typeof this.rtcSession?.reemitEncryptionKeys === "function") {
             try {
                 this.rtcSession.reemitEncryptionKeys();
@@ -291,45 +274,49 @@ class MatrixRtcE2eeController {
     }
 
     /**
-     * Applies a media key into LiveKit key provider.
+     * Flushes buffered keys into the LiveKit key provider.
+     */
+    flushBufferedKeys() {
+        if (this.bufferedKeys.size === 0) return;
+
+        this.log(`flushing ${this.bufferedKeys.size} buffered media keys into LiveKit key provider`);
+        const entries = Array.from(this.bufferedKeys.values());
+        this.bufferedKeys.clear();
+
+        for (const item of entries) {
+            this.applyKey(item.rtcBackendIdentity, item.membership, item.keyBin, item.keyIndex, item.isOwnKey);
+        }
+    }
+
+    /**
+     * Applies a media key into LiveKit key provider as participant-specific key.
      * @param {string} rtcBackendIdentity
      * @param {Object} membership
-     * @param {Uint8Array} keyBin
+     * @param {Uint8Array} key
      * @param {number} keyIndex
      * @param {boolean} isOwnKey
      */
-    applyKey(rtcBackendIdentity, membership, keyBin, keyIndex, isOwnKey) {
-        if (!this.keyProvider) return;
+    applyKey(rtcBackendIdentity, membership, key, keyIndex, isOwnKey) {
+        if (!this.keyProvider) {
+            return this.handleE2eeFailure("LiveKit E2EE key provider is not attached");
+        }
+
+        const participantIdentity = this.resolveParticipantIdentity(rtcBackendIdentity, membership);
+
+        if (!participantIdentity) {
+            return this.handleE2eeFailure("MatrixRTC encryption key has no participant identity");
+        }
+
+        if (typeof this.keyProvider.setRawKey !== "function") {
+            return this.handleE2eeFailure("LiveKit KeyProvider does not support raw participant keys");
+        }
 
         try {
-            if (isOwnKey) {
-                // Set shared key if room/participant uses shared key mode
-                if (typeof this.keyProvider.setSharedKey === "function") {
-                    this.keyProvider.setSharedKey(keyBin, keyIndex);
-                }
-
-                // Also set under own identity
-                if (rtcBackendIdentity && typeof this.keyProvider.setKey === "function") {
-                    this.keyProvider.setKey(rtcBackendIdentity, keyBin, keyIndex);
-                }
-                const localIdentity = this.livekitRoom?.localParticipant?.identity;
-                if (localIdentity && localIdentity !== rtcBackendIdentity && typeof this.keyProvider.setKey === "function") {
-                    this.keyProvider.setKey(localIdentity, keyBin, keyIndex);
-                }
-            } else {
-                // Remote participant key
-                if (rtcBackendIdentity && typeof this.keyProvider.setKey === "function") {
-                    this.keyProvider.setKey(rtcBackendIdentity, keyBin, keyIndex);
-                }
-                if (membership?.userId && membership?.deviceId) {
-                    const fallbackId = `${membership.userId}:${membership.deviceId}`;
-                    if (fallbackId !== rtcBackendIdentity && typeof this.keyProvider.setKey === "function") {
-                        this.keyProvider.setKey(fallbackId, keyBin, keyIndex);
-                    }
-                }
-            }
+            this.keyProvider.setRawKey(participantIdentity, key, keyIndex);
+            this.log(`LiveKit E2EE key installed: participant=${participantIdentity} keyIndex=${keyIndex}`);
         } catch (err) {
-            this.log(`error applying key to keyProvider: ${err instanceof Error ? err.message : String(err)}`);
+            const msg = err instanceof Error ? err.message : String(err);
+            return this.handleE2eeFailure(`Failed to install raw media key into LiveKit: ${msg}`);
         }
     }
 
