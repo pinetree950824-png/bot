@@ -173,7 +173,7 @@ async function runTests() {
         controller.livekitRoom = { e2eeManager: { keyProvider: mockKeyProvider } };
 
         const testKey = new Uint8Array([10, 20, 30, 40]);
-        controller.applyKey("lk_p1", { userId: "@u:m.org", deviceId: "D1" }, testKey, 2, false);
+        controller.applyKey("lk_p1", { userId: "@u:m.org", deviceId: "D1" }, testKey, 2);
 
         assert.strictEqual(appliedKeys.length, 1);
         assert.strictEqual(appliedKeys[0].id, "lk_p1");
@@ -328,9 +328,9 @@ async function runTests() {
         controller.attachLivekitRoom(mockRoom);
 
         // Participant joins with index 0
-        controller.applyKey("lk_alice", null, new Uint8Array([1]), 0, false);
+        controller.applyKey("lk_alice", null, new Uint8Array([1]), 0);
         // Participant rotates key or rejoins with index 1
-        controller.applyKey("lk_alice", null, new Uint8Array([2]), 1, false);
+        controller.applyKey("lk_alice", null, new Uint8Array([2]), 1);
 
         assert.strictEqual(applied.length, 2);
         assert.strictEqual(applied[0].idx, 0);
@@ -366,7 +366,7 @@ async function runTests() {
         // KeyProvider missing setRawKey
         controller.keyProvider = {};
         assert.throws(() => {
-            controller.applyKey("user1", null, new Uint8Array([1]), 0, false);
+            controller.applyKey("user1", null, new Uint8Array([1]), 0);
         }, /LiveKit KeyProvider does not support raw participant keys/);
 
         console.log("PASS: Test 12 - E2EE required mode hard failures");
@@ -400,7 +400,38 @@ async function runTests() {
         console.log("PASS: Test 14 - Patched KeyProvider.prototype.setRawKey exists");
     }
 
-    console.log("\nALL 14 TESTS PASSED SUCCESSFULLY! (14/14)");
+    // Test 15: connectOptions compatibility with LiveKit Room.connect and RoomOptions
+    {
+        const controller = new MatrixRtcE2eeController({
+            matrixClient: {},
+            rtcSession: null,
+            roomId: "!room:example.org",
+            userId: "@bot:example.org",
+            deviceId: "BOTDEV",
+            mode: "required",
+        });
+        controller.enabled = true;
+
+        const connectOptions = {
+            autoSubscribe: true,
+            dynacast: true,
+            ...(controller.getLivekitEncryptionOptions() ?? {}),
+        };
+
+        // Must have encryption field that LiveKit Room.connect inspects
+        assert(connectOptions.encryption !== undefined, "connectOptions must have encryption field");
+        assert.strictEqual(connectOptions.encryption.encryptionType, EncryptionType.GCM);
+        assert(connectOptions.encryption.keyProviderOptions !== undefined);
+
+        // Also check getJoinSessionOptions
+        const joinOpts = controller.getJoinSessionOptions("matrix2_auto");
+        assert.strictEqual(joinOpts.manageMediaKeys, true);
+        assert.strictEqual(joinOpts.callIntent, "audio");
+
+        console.log("PASS: Test 15 - connectOptions & joinOptions integration compatibility");
+    }
+
+    console.log("\nALL 15 TESTS PASSED SUCCESSFULLY! (15/15)");
 }
 
 runTests().catch((err) => {

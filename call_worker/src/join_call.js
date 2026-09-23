@@ -95,16 +95,20 @@ function shouldFallbackStickyJoin(mode, error) {
     return normalized.includes("unsupportedstickyeventsendpointerror") || normalized.includes("sticky events");
 }
 
-function joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, membershipMode, extraOptions = {}) {
+function joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, membershipMode, e2eeController = null) {
+    const e2eeJoinOptions = e2eeController ? e2eeController.getJoinSessionOptions(membershipMode) : {};
+    const joinConfig = {
+        callIntent: "audio",
+        unstableSendStickyEvents: useStickyMembershipEvents(membershipMode),
+        manageMediaKeys: Boolean(e2eeController && e2eeController.isEnabled),
+        ...e2eeJoinOptions,
+    };
+    logLine(`joining MatrixRTC session manageMediaKeys=${joinConfig.manageMediaKeys} sticky=${joinConfig.unstableSendStickyEvents}`);
     session.joinRTCSession(
         { userId, deviceId, memberId },
         [livekitTransport],
         livekitTransport,
-        {
-            callIntent: "audio",
-            unstableSendStickyEvents: useStickyMembershipEvents(membershipMode),
-            ...extraOptions,
-        },
+        joinConfig,
     );
 }
 
@@ -489,12 +493,16 @@ class CallWorker {
         }
 
         const room = new Room();
-        const connectOptions = { autoSubscribe: true, dynacast: true };
-        if (this.e2eeController && this.e2eeController.isEnabled) {
-            connectOptions.encryption = this.e2eeController.getLivekitEncryptionOptions();
-        }
+        const connectOptions = {
+            autoSubscribe: true,
+            dynacast: true,
+            ...(this.e2eeController ? this.e2eeController.getLivekitEncryptionOptions() : {}),
+        };
         await room.connect(config.url, config.jwt, connectOptions);
-        logLine(`livekit connected auth_mode=${config._auth_mode || "unknown"} e2ee=${Boolean(this.e2eeController && this.e2eeController.isEnabled)}`);
+        logLine(
+            `livekit connected auth_mode=${config._auth_mode || "unknown"} ` +
+            `e2ee=${Boolean(this.e2eeController && this.e2eeController.isEnabled)}`,
+        );
 
         if (this.e2eeController && this.e2eeController.isEnabled) {
             this.e2eeController.attachLivekitRoom(room);
@@ -903,8 +911,7 @@ async function main() {
         livekit_service_url: livekitServiceUrl,
     };
 
-    const rtcJoinConfig = e2eeController.getJoinSessionOptions(effectiveMembershipMode);
-    joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, effectiveMembershipMode, rtcJoinConfig);
+    joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, effectiveMembershipMode, e2eeController);
 
     try {
         await waitForJoinState(session, 20_000);
@@ -925,8 +932,7 @@ async function main() {
         }
 
         effectiveMembershipMode = "legacy";
-        const retryJoinConfig = e2eeController.getJoinSessionOptions(effectiveMembershipMode);
-        joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, effectiveMembershipMode, retryJoinConfig);
+        joinRtcSessionWithMode(session, { userId, deviceId, memberId }, livekitTransport, effectiveMembershipMode, e2eeController);
         await waitForJoinState(session, 20_000);
         await waitForJoinOutcome(session, userId, deviceId, 20_000);
     }

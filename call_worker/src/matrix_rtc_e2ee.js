@@ -1,5 +1,5 @@
 const { MatrixRTCSessionEvent } = require("matrix-js-sdk/lib/matrixrtc");
-const { EncryptionType, KeyProvider } = require("@livekit/rtc-node");
+const { EncryptionType } = require("@livekit/rtc-node");
 
 function parseBool(value, defaultValue = false) {
     if (value === undefined || value === null) return defaultValue;
@@ -156,12 +156,18 @@ class MatrixRtcE2eeController {
      */
     getLivekitEncryptionOptions() {
         if (!this.enabled) return undefined;
-        return {
+        const e2eeOptions = {
             keyProviderOptions: {
                 ratchetWindowSize: 16,
                 failureTolerance: -1,
             },
             encryptionType: EncryptionType.GCM,
+        };
+        return {
+            encryption: e2eeOptions,
+            e2ee: e2eeOptions,
+            keyProviderOptions: e2eeOptions.keyProviderOptions,
+            encryptionType: e2eeOptions.encryptionType,
         };
     }
 
@@ -217,7 +223,7 @@ class MatrixRtcE2eeController {
         this.log(`MatrixRTC media key received: participant=${participantLabel} keyIndex=${keyIndex} is_own=${isOwnKey} v=${this.keyVersion}`);
 
         if (this.livekitRoom && this.keyProvider) {
-            this.applyKey(rtcBackendIdentity, membership, keyBin, keyIndex, isOwnKey);
+            this.applyKey(rtcBackendIdentity, membership, keyBin, keyIndex);
         } else {
             // Buffer keys until LiveKit is connected and keyProvider attached
             // Deduplication key: participantIdentity + ":" + keyIndex
@@ -227,7 +233,6 @@ class MatrixRtcE2eeController {
                 membership,
                 keyBin,
                 keyIndex,
-                isOwnKey,
             });
             this.log(`buffered media key for participant=${participantLabel} keyIndex=${keyIndex} (total_buffered=${this.bufferedKeys.size})`);
         }
@@ -284,7 +289,7 @@ class MatrixRtcE2eeController {
         this.bufferedKeys.clear();
 
         for (const item of entries) {
-            this.applyKey(item.rtcBackendIdentity, item.membership, item.keyBin, item.keyIndex, item.isOwnKey);
+            this.applyKey(item.rtcBackendIdentity, item.membership, item.keyBin, item.keyIndex);
         }
     }
 
@@ -294,9 +299,8 @@ class MatrixRtcE2eeController {
      * @param {Object} membership
      * @param {Uint8Array} key
      * @param {number} keyIndex
-     * @param {boolean} isOwnKey
      */
-    applyKey(rtcBackendIdentity, membership, key, keyIndex, isOwnKey) {
+    applyKey(rtcBackendIdentity, membership, key, keyIndex) {
         if (!this.keyProvider) {
             return this.handleE2eeFailure("LiveKit E2EE key provider is not attached");
         }
