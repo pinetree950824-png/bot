@@ -1,0 +1,42 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local sensitive configuration (NEVER commit tokens)
+config/config.toml
+config.toml
+.env
+*.env
+
+# Matrix crypto, state, and local databases
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Audio cache & temporary downloaded tracks
+cache/
+audio_cache/
+tmp/
+*.opus
+*.mp3
+*.webm
+*.m4a
+*.wav
+
+# Logs
+logs/
+*.log
+call_worker/call_worker.log*
+
+# Node dependencies
+node_modules/
+call_worker/node_modules/
+
+# Saved queues
+saved_queues.json
+
+# OS generated files
+.DS_Store
+Thumbs.db
