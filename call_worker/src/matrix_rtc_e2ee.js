@@ -20,7 +20,7 @@ class MatrixRtcE2eeController {
      * @param {string} [options.mode] "auto" | "required" | "disabled"
      * @param {Function} [options.logger]
      */
-    constructor({ matrixClient, rtcSession, roomId, userId, deviceId, mode = "auto", logger }) {
+    constructor({ matrixClient, rtcSession, roomId, userId, deviceId, mode = "auto", logger, onError }) {
         this.matrixClient = matrixClient;
         this.rtcSession = rtcSession;
         this.roomId = roomId;
@@ -28,8 +28,10 @@ class MatrixRtcE2eeController {
         this.deviceId = deviceId;
         this.mode = (mode || "auto").trim().toLowerCase();
         this.logger = typeof logger === "function" ? logger : (msg) => console.log(msg);
+        this.onError = typeof onError === "function" ? onError : null;
 
         this.enabled = false;
+        this.roomIsEncrypted = false;
         this.livekitRoom = null;
         this.keyProvider = null;
         this.bufferedKeys = new Map();
@@ -47,20 +49,30 @@ class MatrixRtcE2eeController {
     }
 
     /**
-     * Handles an E2EE failure according to current mode.
-     * In "required" mode, this throws a fatal Error to abort call joining.
-     * In "auto" mode, it logs a warning and gracefully disables E2EE.
+     * Handles an E2EE failure according to current mode and room encryption.
+     * In "required" mode or when the room is encrypted (m.room.encryption),
+     * this throws a fatal Error to abort call joining.
+     * In "auto" mode for unencrypted rooms, it logs a warning and gracefully disables E2EE.
      * @param {string} reason
      */
     handleE2eeFailure(reason) {
-        if (this.mode === "required") {
-            const errorMsg = `MatrixRTC E2EE fatal error (required mode): ${reason}`;
+        this.enabled = false;
+        if (this.mode === "required" || this.roomIsEncrypted) {
+            const context = this.mode === "required" ? "required mode" : "encrypted room";
+            const errorMsg = `MatrixRTC E2EE fatal error (${context}): ${reason}`;
             this.log(`CRITICAL: ${errorMsg}`);
-            throw new Error(errorMsg);
+            const error = new Error(errorMsg);
+            if (this.onError) {
+                try {
+                    this.onError(error);
+                } catch {
+                    // best effort
+                }
+            }
+            throw error;
         }
 
         this.log(`warning: E2EE failure (${reason}); falling back to non-E2EE`);
-        this.enabled = false;
         return false;
     }
 
@@ -71,9 +83,12 @@ class MatrixRtcE2eeController {
     async checkAndInitCrypto() {
         if (this.mode === "disabled") {
             this.enabled = false;
+            this.roomIsEncrypted = false;
             this.log("mode=disabled; E2EE media encryption disabled");
             return false;
         }
+
+        this.roomIsEncrypted = await this.isRoomEncrypted();
 
         // Initialize Rust crypto if not already initialized
         if (!this.matrixClient.getCrypto?.()) {
@@ -87,7 +102,6 @@ class MatrixRtcE2eeController {
             }
         }
 
-        const isRoomEncrypted = await this.isRoomEncrypted();
         if (this.mode === "required") {
             this.enabled = true;
             this.log("mode=required; forcing E2EE media encryption");
@@ -95,7 +109,7 @@ class MatrixRtcE2eeController {
         }
 
         // auto mode
-        if (isRoomEncrypted) {
+        if (this.roomIsEncrypted) {
             this.enabled = true;
             this.log("room has encryption active; enabled E2EE media encryption");
             return true;
@@ -117,6 +131,10 @@ class MatrixRtcE2eeController {
                 if (room.hasEncryptionStateEvent()) {
                     return true;
                 }
+            }
+
+            if (room?.currentState?.getStateEvents?.("m.room.encryption", "")) {
+                return true;
             }
 
             if (typeof this.matrixClient.isRoomEncrypted === "function") {
@@ -158,6 +176,7 @@ class MatrixRtcE2eeController {
         if (!this.enabled) return undefined;
         const e2eeOptions = {
             keyProviderOptions: {
+                ratchetSalt: Buffer.from("LKFrameEncryptionKey"),
                 ratchetWindowSize: 16,
                 failureTolerance: -1,
             },
@@ -313,6 +332,10 @@ class MatrixRtcE2eeController {
 
         if (typeof this.keyProvider.setRawKey !== "function") {
             return this.handleE2eeFailure("LiveKit KeyProvider does not support raw participant keys");
+        }
+
+        if (!key || !(key instanceof Uint8Array || Buffer.isBuffer(key)) || key.length === 0) {
+            return this.handleE2eeFailure("Malformed MatrixRTC encryption key (empty or invalid type)");
         }
 
         try {

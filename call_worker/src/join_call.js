@@ -889,6 +889,9 @@ async function main() {
         deviceId,
         mode: e2eeMode,
         logger: logLine,
+        onError: (err) => {
+            emit({ event: "error", message: err instanceof Error ? err.message : String(err) });
+        },
     });
     await e2eeController.checkAndInitCrypto();
     if (e2eeController.isEnabled) {

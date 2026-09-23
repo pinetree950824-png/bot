@@ -358,12 +358,14 @@ async function runTests() {
         }, /LiveKit E2EE manager is unavailable/);
 
         // Room with e2eeManager but no keyProvider
+        controller.enabled = true;
         const badRoom2 = { e2eeManager: { keyProvider: null } };
         assert.throws(() => {
             controller.attachLivekitRoom(badRoom2);
         }, /LiveKit E2EE key provider is unavailable/);
 
         // KeyProvider missing setRawKey
+        controller.enabled = true;
         controller.keyProvider = {};
         assert.throws(() => {
             controller.applyKey("user1", null, new Uint8Array([1]), 0);
@@ -372,7 +374,7 @@ async function runTests() {
         console.log("PASS: Test 12 - E2EE required mode hard failures");
     }
 
-    // Test 13: E2EE auto mode graceful fallback
+    // Test 13: E2EE auto mode graceful fallback on unencrypted room
     {
         const controller = new MatrixRtcE2eeController({
             matrixClient: {},
@@ -383,24 +385,83 @@ async function runTests() {
             mode: "auto",
         });
         controller.enabled = true;
+        controller.roomIsEncrypted = false;
 
-        // Should not throw, should set enabled = false
+        // In unencrypted room, auto mode gracefully disables E2EE without throwing
         const badRoom = { e2eeManager: null };
         assert.doesNotThrow(() => {
             controller.attachLivekitRoom(badRoom);
         });
         assert.strictEqual(controller.isEnabled, false);
 
-        console.log("PASS: Test 13 - E2EE auto mode graceful fallback");
+        console.log("PASS: Test 13 - E2EE auto mode graceful fallback for unencrypted room");
     }
 
-    // Test 14: Patched @livekit/rtc-node KeyProvider native method check
+    // Test 14: E2EE auto mode HARD FAILURE when room is encrypted
+    {
+        let errorReceived = null;
+        const controller = new MatrixRtcE2eeController({
+            matrixClient: {},
+            rtcSession: null,
+            roomId: "!encrypted_room:example.org",
+            userId: "@bot:example.org",
+            deviceId: "BOTDEV",
+            mode: "auto",
+            onError: (err) => { errorReceived = err; },
+        });
+        controller.enabled = true;
+        controller.roomIsEncrypted = true; // Room has m.room.encryption
+
+        // When room is encrypted, auto mode MUST throw and fail hard, NOT silently degrade to plaintext!
+        const badRoom = { e2eeManager: null };
+        assert.throws(() => {
+            controller.attachLivekitRoom(badRoom);
+        }, /MatrixRTC E2EE fatal error \(encrypted room\): LiveKit E2EE manager is unavailable/);
+
+        assert(errorReceived !== null, "onError callback must receive the fatal error");
+        assert.strictEqual(controller.isEnabled, false);
+
+        console.log("PASS: Test 14 - E2EE auto mode hard failure for encrypted room");
+    }
+
+    // Test 15: Malformed key rejection in applyKey
+    {
+        const controller = new MatrixRtcE2eeController({
+            matrixClient: {},
+            rtcSession: null,
+            roomId: "!room:example.org",
+            userId: "@bot:example.org",
+            deviceId: "BOTDEV",
+            mode: "required",
+        });
+        controller.enabled = true;
+        controller.keyProvider = { setRawKey: () => {} };
+
+        // Empty key
+        assert.throws(() => {
+            controller.applyKey("user1", null, new Uint8Array([]), 0);
+        }, /Malformed MatrixRTC encryption key/);
+
+        // Null key
+        assert.throws(() => {
+            controller.applyKey("user1", null, null, 0);
+        }, /Malformed MatrixRTC encryption key/);
+
+        // String instead of Uint8Array/Buffer
+        assert.throws(() => {
+            controller.applyKey("user1", null, "invalid-key-string", 0);
+        }, /Malformed MatrixRTC encryption key/);
+
+        console.log("PASS: Test 15 - Malformed key rejection");
+    }
+
+    // Test 16: Patched @livekit/rtc-node KeyProvider native method check
     {
         assert(typeof KeyProvider.prototype.setRawKey === "function", "KeyProvider must have setRawKey on prototype");
-        console.log("PASS: Test 14 - Patched KeyProvider.prototype.setRawKey exists");
+        console.log("PASS: Test 16 - Patched KeyProvider.prototype.setRawKey exists");
     }
 
-    // Test 15: connectOptions compatibility with LiveKit Room.connect and RoomOptions
+    // Test 17: connectOptions compatibility with LiveKit Room.connect and RoomOptions
     {
         const controller = new MatrixRtcE2eeController({
             matrixClient: {},
@@ -422,16 +483,18 @@ async function runTests() {
         assert(connectOptions.encryption !== undefined, "connectOptions must have encryption field");
         assert.strictEqual(connectOptions.encryption.encryptionType, EncryptionType.GCM);
         assert(connectOptions.encryption.keyProviderOptions !== undefined);
+        assert.strictEqual(connectOptions.encryption.keyProviderOptions.ratchetWindowSize, 16);
+        assert.deepStrictEqual(connectOptions.encryption.keyProviderOptions.ratchetSalt, Buffer.from("LKFrameEncryptionKey"));
 
         // Also check getJoinSessionOptions
         const joinOpts = controller.getJoinSessionOptions("matrix2_auto");
         assert.strictEqual(joinOpts.manageMediaKeys, true);
         assert.strictEqual(joinOpts.callIntent, "audio");
 
-        console.log("PASS: Test 15 - connectOptions & joinOptions integration compatibility");
+        console.log("PASS: Test 17 - connectOptions & joinOptions integration compatibility");
     }
 
-    console.log("\nALL 15 TESTS PASSED SUCCESSFULLY! (15/15)");
+    console.log("\nALL 17 TESTS PASSED SUCCESSFULLY! (17/17)");
 }
 
 runTests().catch((err) => {
