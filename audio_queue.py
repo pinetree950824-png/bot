@@ -669,9 +669,9 @@ class AudioQueue:
                 silence_ok = self.add_silence_to_wav(str(temp_file), final_output, self.preroll_silence)
                 if not silence_ok:
                     logger.warning("Failed to add pre-roll silence, using original file")
-                    temp_file.rename(final_output)
+                    temp_file.replace(final_output)
             else:
-                temp_file.rename(final_output)
+                temp_file.replace(final_output)
 
             for leftover in temp_candidates:
                 if leftover == final_output_path:

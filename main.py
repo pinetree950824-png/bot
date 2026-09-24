@@ -1,11 +1,36 @@
 import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
+import os
+from pathlib import Path
+import sys
 
 from bot import IntegratedBot
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+_instance_lock_file = None
+
+
+def acquire_instance_lock():
+    global _instance_lock_file
+    lock_path = Path("data/musicbot.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _instance_lock_file = open(lock_path, "a+")
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(_instance_lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(_instance_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError):
+        print("\n" + "=" * 60)
+        print("[CRITICAL] Another instance of Matrix Music Bot is already running!")
+        print("Please close any existing running bot windows or terminate existing python processes.")
+        print("=" * 60 + "\n")
+        sys.exit(1)
 
 
 class CleanLogNoiseFilter(logging.Filter):
@@ -78,4 +103,5 @@ async def main():
 
 
 if __name__ == "__main__":
+    acquire_instance_lock()
     asyncio.run(main())
