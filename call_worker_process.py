@@ -405,7 +405,10 @@ class CallWorkerProcess:
                     break
                 text = line.decode("utf-8", errors="replace").rstrip()
                 if text:
-                    logger.warning("[call-worker:stderr] %s", text)
+                    if "One time key" in text and "already exists" in text:
+                        logger.debug("[call-worker:stderr] %s", text)
+                    else:
+                        logger.warning("[call-worker:stderr] %s", text)
         except asyncio.CancelledError:
             pass
 

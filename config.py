@@ -54,6 +54,8 @@ class Config:
         "ui.show_progress_messages": False,
         "ui.rich_formatting": False,
         "ui.quiet_mode": True,
+        "matrix.device_id": "",
+        "paths.crypto_store": "data/nio_store",
     }
 
     def __init__(self):
@@ -69,6 +71,9 @@ class Config:
         self.MATRIX_HOMESERVER = self._get_str("MATRIX_HOMESERVER", "matrix", "homeserver")
         self.MATRIX_USER_ID = self._get_str("MATRIX_USER_ID", "matrix", "user_id")
         self.MATRIX_ACCESS_TOKEN = self._get_str("MATRIX_ACCESS_TOKEN", "matrix", "access_token")
+        self.MATRIX_DEVICE_ID = self._get_str(
+            "MATRIX_DEVICE_ID", "matrix", "device_id", default=self.DEFAULTS["matrix.device_id"]
+        )
 
         self.BOT_NAME = self._get_str("BOT_NAME", "bot", "name", default=self.DEFAULTS["bot.name"])
         self.HISTORY_LIMIT = self._get_nonnegative_int(
@@ -87,6 +92,10 @@ class Config:
         self.SAVED_QUEUES_FILE = Path(
             self._get_str("SAVED_QUEUES_FILE", "paths", "saved_queues_file", default=self.DEFAULTS["paths.saved_queues_file"])
             or self.DEFAULTS["paths.saved_queues_file"]
+        )
+        self.CRYPTO_STORE_DIR = Path(
+            self._get_str("CRYPTO_STORE_DIR", "paths", "crypto_store", default=self.DEFAULTS["paths.crypto_store"])
+            or self.DEFAULTS["paths.crypto_store"]
         )
 
         self.AUTO_ADVANCE_BUFFER = self._get_nonnegative_float(
@@ -309,6 +318,51 @@ class Config:
                 + ", ".join(missing)
                 + ". Create config.toml (see config/config.example.toml)."
             )
+
+        self.resolve_device_id()
+
+    def resolve_device_id(self) -> str:
+        """Resolves or discovers a persistent Matrix device ID for crypto store."""
+        if self.MATRIX_DEVICE_ID:
+            return self.MATRIX_DEVICE_ID
+
+        cache_file = self.CRYPTO_STORE_DIR / "device_id.txt"
+        if cache_file.exists():
+            try:
+                cached = cache_file.read_text(encoding="utf-8").strip()
+                if cached:
+                    self.MATRIX_DEVICE_ID = cached
+                    return cached
+            except Exception:
+                pass
+
+        if self.MATRIX_HOMESERVER and self.MATRIX_ACCESS_TOKEN:
+            try:
+                import json
+                import urllib.request
+
+                url = self.MATRIX_HOMESERVER.rstrip("/") + "/_matrix/client/v3/account/whoami"
+                req = urllib.request.Request(
+                    url,
+                    headers={"Authorization": f"Bearer {self.MATRIX_ACCESS_TOKEN}"},
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    dev_id = data.get("device_id")
+                    if dev_id:
+                        self.MATRIX_DEVICE_ID = dev_id
+                        try:
+                            self.CRYPTO_STORE_DIR.mkdir(parents=True, exist_ok=True)
+                            cache_file.write_text(dev_id, encoding="utf-8")
+                        except Exception:
+                            pass
+                        return dev_id
+            except Exception:
+                pass
+
+        fallback = "MUSICBOT"
+        self.MATRIX_DEVICE_ID = fallback
+        return fallback
 
     @staticmethod
     def _load_toml_file(path: Path) -> dict[str, Any]:

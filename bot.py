@@ -8,7 +8,19 @@ import subprocess
 import time
 from typing import Awaitable, Callable, Optional
 
-from nio import AsyncClient, InviteMemberEvent, MatrixRoom, RoomMessageText, RoomGetStateResponse, SyncError
+from nio import (
+    AsyncClient,
+    AsyncClientConfig,
+    EncryptionError,
+    ForwardedRoomKeyEvent,
+    InviteMemberEvent,
+    MatrixRoom,
+    MegolmEvent,
+    RoomGetStateResponse,
+    RoomKeyEvent,
+    RoomMessageText,
+    SyncError,
+)
 
 from config import Config
 from audio_queue import AudioQueue
@@ -17,6 +29,7 @@ from saved_queues import SavedQueueStore
 
 
 logger = logging.getLogger(__name__)
+logging.getLogger("nio.responses").setLevel(logging.ERROR)
 
 
 @dataclass(slots=True)
@@ -32,9 +45,34 @@ class IntegratedBot:
 
     def __init__(self, config: Config):
         self.config = config
-        self.client = AsyncClient(config.MATRIX_HOMESERVER, config.MATRIX_USER_ID)
-        self.client.access_token = config.MATRIX_ACCESS_TOKEN
+
+        self.config.CRYPTO_STORE_DIR.mkdir(parents=True, exist_ok=True)
+        store_path = str(self.config.CRYPTO_STORE_DIR)
+        device_id = self.config.MATRIX_DEVICE_ID or "MUSICBOT"
+
+        safe_user_id = (self.config.MATRIX_USER_ID or "bot").replace(":", "_").replace("@", "")
+        store_name = f"{safe_user_id}_{device_id}.db"
+
+        client_config = AsyncClientConfig(
+            encryption_enabled=True,
+            store_sync_tokens=True,
+            store_name=store_name,
+        )
+
+        self.client = AsyncClient(
+            config.MATRIX_HOMESERVER,
+            config.MATRIX_USER_ID,
+            device_id=device_id,
+            store_path=store_path,
+            config=client_config,
+        )
+        self.client.restore_login(
+            user_id=config.MATRIX_USER_ID,
+            device_id=device_id,
+            access_token=config.MATRIX_ACCESS_TOKEN,
+        )
         self.first_sync_done = False
+        self._pending_megolm_events: dict[str, tuple[MatrixRoom, MegolmEvent, float]] = {}
 
         self.audio_queue = AudioQueue(
             config.AUDIO_DIR,
@@ -84,6 +122,7 @@ class IntegratedBot:
                 "MATRIX_HOMESERVER": config.MATRIX_HOMESERVER or "",
                 "MATRIX_USER_ID": config.MATRIX_USER_ID or "",
                 "MATRIX_ACCESS_TOKEN": config.MATRIX_ACCESS_TOKEN or "",
+                "MATRIX_DEVICE_ID": config.MATRIX_DEVICE_ID or "",
                 "NORMALIZE_AUDIO": "true" if config.NORMALIZE_AUDIO else "false",
                 "FADE_IN_MS": str(config.FADE_IN_MS),
                 "VOLUME_PERCENT": str(config.VOLUME_PERCENT),
@@ -98,6 +137,9 @@ class IntegratedBot:
 
         self._notify_room_id: Optional[str] = None
         self.client.add_event_callback(self.on_message, RoomMessageText)
+        self.client.add_event_callback(self.on_megolm_event, MegolmEvent)
+        self.client.add_event_callback(self.on_room_key, RoomKeyEvent)
+        self.client.add_event_callback(self.on_room_key, ForwardedRoomKeyEvent)
         self.client.add_event_callback(self.on_invite, InviteMemberEvent)
         self.client.add_response_callback(self.on_sync_error, SyncError)
 
@@ -221,7 +263,14 @@ class IntegratedBot:
         if self.config.RICH_FORMATTING and html_body:
             content["format"] = "org.matrix.custom.html"
             content["formatted_body"] = html_body
-        await self.client.room_send(room_id, message_type="m.room.message", content=content)
+        resp = await self.client.room_send(
+            room_id,
+            message_type="m.room.message",
+            content=content,
+            ignore_unverified_devices=True,
+        )
+        if hasattr(resp, "message") and not getattr(resp, "event_id", None):
+            logger.error("Failed to send message to %s: %s", room_id, resp.message)
 
     def _ensure_advance_watchdog(self):
         if self._advance_watchdog_task and not self._advance_watchdog_task.done():
@@ -1882,6 +1931,50 @@ class IntegratedBot:
         if event.body.strip().startswith("!"):
             await self.handle_command(room, event.body, sender=event.sender)
 
+    async def on_megolm_event(self, room: MatrixRoom, event: MegolmEvent):
+        if event.sender == self.config.MATRIX_USER_ID or not self.first_sync_done:
+            return
+
+        if getattr(self.client, "olm", None):
+            try:
+                decrypted = self.client.decrypt_event(event)
+                if isinstance(decrypted, RoomMessageText):
+                    await self.on_message(room, decrypted)
+                    return
+            except Exception:
+                pass
+
+        now = time.time()
+        self._pending_megolm_events[event.event_id] = (room, event, now)
+        expired = [eid for eid, (_, _, ts) in self._pending_megolm_events.items() if now - ts > 120.0]
+        for eid in expired:
+            self._pending_megolm_events.pop(eid, None)
+
+        if getattr(self.client, "olm", None):
+            try:
+                if event.session_id not in getattr(self.client, "outgoing_key_requests", {}):
+                    await self.client.request_room_key(event)
+                    logger.info("[E2EE] Requested missing room key for session %s from %s", event.session_id, event.sender)
+            except Exception as exc:
+                logger.debug("[E2EE] request_room_key failed: %s", exc)
+
+    async def on_room_key(self, event):
+        if not self._pending_megolm_events or not getattr(self.client, "olm", None):
+            return
+
+        decrypted_ids = []
+        for event_id, (room, megolm_event, _) in list(self._pending_megolm_events.items()):
+            try:
+                decrypted = self.client.decrypt_event(megolm_event)
+                if isinstance(decrypted, RoomMessageText):
+                    decrypted_ids.append(event_id)
+                    await self.on_message(room, decrypted)
+            except Exception:
+                pass
+
+        for event_id in decrypted_ids:
+            self._pending_megolm_events.pop(event_id, None)
+
     async def start(self):
         logger.info("=" * 60)
         logger.info("Music Bot Core Starting")
@@ -1894,6 +1987,13 @@ class IntegratedBot:
         self._run_startup_checks()
         logger.info("=" * 60)
 
+        if self.client.should_upload_keys:
+            try:
+                await self.client.keys_upload()
+                logger.info("[E2EE] Initial device keys uploaded to homeserver")
+            except Exception as exc:
+                logger.warning("[E2EE] Initial keys_upload warning: %s", exc)
+
         initial_sync = await self.client.sync(timeout=30000, full_state=True)
         if isinstance(initial_sync, SyncError):
             if "M_UNKNOWN_TOKEN" in str(initial_sync) or getattr(initial_sync, "status_code", None) == 401:
@@ -1904,6 +2004,13 @@ class IntegratedBot:
                 raise RuntimeError("Matrix access_token is inactive or expired (M_UNKNOWN_TOKEN). Please update config/config.toml.")
             logger.error(f"[ERROR] Matrix initial sync failed: {initial_sync.message}")
             raise RuntimeError(f"Matrix initial sync failed: {initial_sync.message}")
+
+        if self.client.should_upload_keys:
+            try:
+                await self.client.keys_upload()
+                logger.info("[E2EE] Post-sync device keys uploaded to homeserver")
+            except Exception as exc:
+                logger.warning("[E2EE] Post-sync keys_upload warning: %s", exc)
 
         self.first_sync_done = True
         self._start_message_dispatcher()

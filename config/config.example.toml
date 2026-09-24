@@ -3,6 +3,8 @@
 homeserver = "https://matrix.org"
 user_id = "@YOUR_BOT_ID:matrix.org"
 access_token = "YOUR_ACCESS_TOKEN_HERE"
+# device_id is optional; if omitted, it will be automatically queried from homeserver whoami
+# device_id = "YOUR_DEVICE_ID"
 
 [bot]
 name = "Music Bot"
@@ -12,6 +14,7 @@ auto_accept_invites = true
 [paths]
 audio_dir = "/tmp/musicbot_audio"
 saved_queues_file = "data/saved_queues.json"
+crypto_store = "data/nio_store"
 
 [audio]
 cache_mode = "size_lru"

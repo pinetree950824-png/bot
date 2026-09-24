@@ -90,7 +90,19 @@ class MatrixRtcE2eeController {
 
         this.roomIsEncrypted = await this.isRoomEncrypted();
 
-        // Initialize Rust crypto if not already initialized
+        if (this.mode === "required") {
+            this.enabled = true;
+            this.log("mode=required; forcing E2EE media encryption");
+        } else if (this.roomIsEncrypted) {
+            this.enabled = true;
+            this.log("room has encryption active; enabled E2EE media encryption");
+        } else {
+            this.enabled = false;
+            this.log("room is not encrypted; E2EE media encryption inactive");
+            return false;
+        }
+
+        // Initialize Rust crypto if E2EE is active and not already initialized
         if (!this.matrixClient.getCrypto?.()) {
             try {
                 this.log("initializing matrix rust crypto with in-memory store...");
@@ -102,22 +114,7 @@ class MatrixRtcE2eeController {
             }
         }
 
-        if (this.mode === "required") {
-            this.enabled = true;
-            this.log("mode=required; forcing E2EE media encryption");
-            return true;
-        }
-
-        // auto mode
-        if (this.roomIsEncrypted) {
-            this.enabled = true;
-            this.log("room has encryption active; enabled E2EE media encryption");
-            return true;
-        }
-
-        this.enabled = false;
-        this.log("room is not encrypted; E2EE media encryption inactive");
-        return false;
+        return true;
     }
 
     /**
@@ -179,7 +176,6 @@ class MatrixRtcE2eeController {
                 ratchetSalt: Buffer.from("LKFrameEncryptionKey"),
                 ratchetWindowSize: 10,
                 keyringSize: 256,
-                keyRingSize: 256,
                 failureTolerance: -1,
             },
             encryptionType: EncryptionType.GCM,

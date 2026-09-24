@@ -856,19 +856,6 @@ async function main() {
         store: new MemoryStore(),
     });
 
-    if (e2eeMode !== "disabled") {
-        try {
-            await client.initRustCrypto({ useIndexedDB: false });
-            logLine("matrix rust crypto initialized");
-        } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            if (e2eeMode === "required") {
-                throw new Error(`Matrix crypto initialization failed in required mode: ${message}`);
-            }
-            logLine(`crypto init failed; continuing without crypto: ${message}`);
-        }
-    }
-
     client.startClient({ initialSyncLimit: 1, lazyLoadMembers: true });
     await waitForPrepared(client, 45_000);
 
