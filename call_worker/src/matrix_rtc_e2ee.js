@@ -114,8 +114,25 @@ class MatrixRtcE2eeController {
             }
         }
 
+        // Prepare the room for encryption so RustCrypto sets up its Megolm
+        // outbound session. Without this, sending m.call.encryption_keys fails
+        // with "Cannot encrypt event in unconfigured room".
+        try {
+            const crypto = this.matrixClient.getCrypto?.();
+            const room = this.matrixClient.getRoom?.(this.roomId);
+            if (crypto && room && typeof crypto.prepareToEncrypt === "function") {
+                await crypto.prepareToEncrypt(room);
+                this.log("room encryption session prepared (Megolm outbound session ready)");
+            }
+        } catch (err) {
+            // prepareToEncrypt failing is not always fatal — log and continue
+            const msg = err instanceof Error ? err.message : String(err);
+            this.log(`warning: prepareToEncrypt failed (${msg}); key events may retry`);
+        }
+
         return true;
     }
+
 
     /**
      * Checks if the Matrix room is configured with encryption.
@@ -161,7 +178,11 @@ class MatrixRtcE2eeController {
             callIntent: "audio",
             unstableSendStickyEvents: membershipMode !== "legacy",
             manageMediaKeys: this.enabled,
-            useExperimentalToDeviceTransport: parseBool(process.env.MATRIX_RTC_TO_DEVICE, false),
+            // Use ToDevice transport by default: RoomKeyTransport requires a
+            // full Megolm outbound session that the in-memory crypto can't set
+            // up reliably (no member Olm sessions). ToDevice sends directly
+            // device-to-device without room encryption state.
+            useExperimentalToDeviceTransport: parseBool(process.env.MATRIX_RTC_TO_DEVICE, true),
         };
     }
 
