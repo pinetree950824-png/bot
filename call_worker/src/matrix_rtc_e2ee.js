@@ -167,6 +167,9 @@ class MatrixRtcE2eeController {
 
     /**
      * Returns LiveKit Room connect options for E2EE.
+     * keyDerivationFunction: 1 (HKDF) matches Element Call's per-participant
+     * key derivation. Native FrameCryptor will internally HKDF-derive the raw
+     * MatrixRTC key via ratchetSalt "LKFrameEncryptionKey".
      * @returns {Object|undefined}
      */
     getLivekitEncryptionOptions() {
@@ -175,7 +178,8 @@ class MatrixRtcE2eeController {
             keyProviderOptions: {
                 ratchetSalt: Buffer.from("LKFrameEncryptionKey"),
                 ratchetWindowSize: 10,
-                keyringSize: 256,
+                keyRingSize: 256,
+                keyDerivationFunction: 1,  // HKDF — matches Element Call browser SDK
                 failureTolerance: -1,
             },
             encryptionType: EncryptionType.GCM,
@@ -183,8 +187,6 @@ class MatrixRtcE2eeController {
         return {
             encryption: e2eeOptions,
             e2ee: e2eeOptions,
-            keyProviderOptions: e2eeOptions.keyProviderOptions,
-            encryptionType: e2eeOptions.encryptionType,
         };
     }
 

@@ -1,8 +1,24 @@
 diff --git a/node_modules/@livekit/rtc-node/dist/e2ee.cjs b/node_modules/@livekit/rtc-node/dist/e2ee.cjs
-index 0c30f2b..82f20d4 100644
+index 0c30f2b..dd53538 100644
 --- a/node_modules/@livekit/rtc-node/dist/e2ee.cjs
 +++ b/node_modules/@livekit/rtc-node/dist/e2ee.cjs
-@@ -117,6 +117,26 @@ class KeyProvider {
+@@ -30,10 +30,14 @@ var import_e2ee_pb = require("./proto/e2ee_pb.cjs");
+ const DEFAULT_RATCHET_SALT = new TextEncoder().encode("LKFrameEncryptionKey");
+ const DEFAULT_RATCHET_WINDOW_SIZE = 16;
+ const DEFAULT_FAILURE_TOLERANCE = -1;
++const DEFAULT_KEY_RING_SIZE = 256;
++const KEY_DERIVATION_FUNCTION_HKDF = 1;
+ const defaultKeyProviderOptions = {
+   ratchetSalt: DEFAULT_RATCHET_SALT,
+   ratchetWindowSize: DEFAULT_RATCHET_WINDOW_SIZE,
+-  failureTolerance: DEFAULT_FAILURE_TOLERANCE
++  failureTolerance: DEFAULT_FAILURE_TOLERANCE,
++  keyRingSize: DEFAULT_KEY_RING_SIZE,
++  keyDerivationFunction: KEY_DERIVATION_FUNCTION_HKDF
+ };
+ const defaultE2EEOptions = {
+   keyProviderOptions: defaultKeyProviderOptions,
+@@ -117,6 +121,26 @@ class KeyProvider {
        }
      });
    }
@@ -42,10 +58,26 @@ index 4257a7c..fde0e4d 100644
      ratchetKey(participantIdentity: string, keyIndex: number): Uint8Array;
  }
 diff --git a/node_modules/@livekit/rtc-node/dist/e2ee.js b/node_modules/@livekit/rtc-node/dist/e2ee.js
-index cf00c74..47a510e 100644
+index cf00c74..5c476ec 100644
 --- a/node_modules/@livekit/rtc-node/dist/e2ee.js
 +++ b/node_modules/@livekit/rtc-node/dist/e2ee.js
-@@ -102,6 +102,26 @@ class KeyProvider {
+@@ -15,10 +15,14 @@ import {
+ const DEFAULT_RATCHET_SALT = new TextEncoder().encode("LKFrameEncryptionKey");
+ const DEFAULT_RATCHET_WINDOW_SIZE = 16;
+ const DEFAULT_FAILURE_TOLERANCE = -1;
++const DEFAULT_KEY_RING_SIZE = 256;
++const KEY_DERIVATION_FUNCTION_HKDF = 1;
+ const defaultKeyProviderOptions = {
+   ratchetSalt: DEFAULT_RATCHET_SALT,
+   ratchetWindowSize: DEFAULT_RATCHET_WINDOW_SIZE,
+-  failureTolerance: DEFAULT_FAILURE_TOLERANCE
++  failureTolerance: DEFAULT_FAILURE_TOLERANCE,
++  keyRingSize: DEFAULT_KEY_RING_SIZE,
++  keyDerivationFunction: KEY_DERIVATION_FUNCTION_HKDF
+ };
+ const defaultE2EEOptions = {
+   keyProviderOptions: defaultKeyProviderOptions,
+@@ -102,6 +106,26 @@ class KeyProvider {
        }
      });
    }
@@ -72,6 +104,84 @@ index cf00c74..47a510e 100644
    exportKey(participantIdentity, keyIndex) {
      const req = new E2eeRequest({
        roomHandle: this.roomHandle,
+diff --git a/node_modules/@livekit/rtc-node/dist/proto/e2ee_pb.cjs b/node_modules/@livekit/rtc-node/dist/proto/e2ee_pb.cjs
+index 6ed7b59..f1dddc0 100644
+--- a/node_modules/@livekit/rtc-node/dist/proto/e2ee_pb.cjs
++++ b/node_modules/@livekit/rtc-node/dist/proto/e2ee_pb.cjs
+@@ -36,6 +36,7 @@ __export(e2ee_pb_exports, {
+   GetKeyResponse: () => GetKeyResponse,
+   GetSharedKeyRequest: () => GetSharedKeyRequest,
+   GetSharedKeyResponse: () => GetSharedKeyResponse,
++  KeyDerivationFunction: () => KeyDerivationFunction,
+   KeyProviderOptions: () => KeyProviderOptions,
+   RatchetKeyRequest: () => RatchetKeyRequest,
+   RatchetKeyResponse: () => RatchetKeyResponse,
+@@ -59,6 +60,15 @@ import_protobuf.proto2.util.setEnumType(EncryptionType, "livekit.proto.Encryptio
+   { no: 1, name: "GCM" },
+   { no: 2, name: "CUSTOM" }
+ ]);
++var KeyDerivationFunction = /* @__PURE__ */ ((KDF) => {
++  KDF[KDF["PBKDF2"] = 0] = "PBKDF2";
++  KDF[KDF["HKDF"] = 1] = "HKDF";
++  return KDF;
++})(KeyDerivationFunction || {});
++import_protobuf.proto2.util.setEnumType(KeyDerivationFunction, "livekit.proto.KeyDerivationFunction", [
++  { no: 0, name: "PBKDF2" },
++  { no: 1, name: "HKDF" }
++]);
+ var EncryptionState = /* @__PURE__ */ ((EncryptionState2) => {
+   EncryptionState2[EncryptionState2["NEW"] = 0] = "NEW";
+   EncryptionState2[EncryptionState2["OK"] = 1] = "OK";
+@@ -129,7 +139,9 @@ _KeyProviderOptions.fields = import_protobuf.proto2.util.newFieldList(() => [
+   { no: 1, name: "shared_key", kind: "scalar", T: 12, opt: true },
+   { no: 2, name: "ratchet_window_size", kind: "scalar", T: 5, req: true },
+   { no: 3, name: "ratchet_salt", kind: "scalar", T: 12, req: true },
+-  { no: 4, name: "failure_tolerance", kind: "scalar", T: 5, req: true }
++  { no: 4, name: "failure_tolerance", kind: "scalar", T: 5, req: true },
++  { no: 5, name: "key_ring_size", kind: "scalar", T: 5, opt: true },
++  { no: 6, name: "key_derivation_function", kind: "enum", T: import_protobuf.proto2.getEnumType(KeyDerivationFunction), opt: true }
+ ]);
+ let KeyProviderOptions = _KeyProviderOptions;
+ const _E2eeOptions = class _E2eeOptions extends import_protobuf.Message {
+diff --git a/node_modules/@livekit/rtc-node/dist/proto/e2ee_pb.js b/node_modules/@livekit/rtc-node/dist/proto/e2ee_pb.js
+index 9e53ca7..f707440 100644
+--- a/node_modules/@livekit/rtc-node/dist/proto/e2ee_pb.js
++++ b/node_modules/@livekit/rtc-node/dist/proto/e2ee_pb.js
+@@ -10,6 +10,15 @@ proto2.util.setEnumType(EncryptionType, "livekit.proto.EncryptionType", [
+   { no: 1, name: "GCM" },
+   { no: 2, name: "CUSTOM" }
+ ]);
++var KeyDerivationFunction = /* @__PURE__ */ ((KDF) => {
++  KDF[KDF["PBKDF2"] = 0] = "PBKDF2";
++  KDF[KDF["HKDF"] = 1] = "HKDF";
++  return KDF;
++})(KeyDerivationFunction || {});
++proto2.util.setEnumType(KeyDerivationFunction, "livekit.proto.KeyDerivationFunction", [
++  { no: 0, name: "PBKDF2" },
++  { no: 1, name: "HKDF" }
++]);
+ var EncryptionState = /* @__PURE__ */ ((EncryptionState2) => {
+   EncryptionState2[EncryptionState2["NEW"] = 0] = "NEW";
+   EncryptionState2[EncryptionState2["OK"] = 1] = "OK";
+@@ -80,7 +89,9 @@ _KeyProviderOptions.fields = proto2.util.newFieldList(() => [
+   { no: 1, name: "shared_key", kind: "scalar", T: 12, opt: true },
+   { no: 2, name: "ratchet_window_size", kind: "scalar", T: 5, req: true },
+   { no: 3, name: "ratchet_salt", kind: "scalar", T: 12, req: true },
+-  { no: 4, name: "failure_tolerance", kind: "scalar", T: 5, req: true }
++  { no: 4, name: "failure_tolerance", kind: "scalar", T: 5, req: true },
++  { no: 5, name: "key_ring_size", kind: "scalar", T: 5, opt: true },
++  { no: 6, name: "key_derivation_function", kind: "enum", T: proto2.getEnumType(KeyDerivationFunction), opt: true }
+ ]);
+ let KeyProviderOptions = _KeyProviderOptions;
+ const _E2eeOptions = class _E2eeOptions extends Message {
+@@ -683,6 +694,7 @@ export {
+   GetKeyResponse,
+   GetSharedKeyRequest,
+   GetSharedKeyResponse,
++  KeyDerivationFunction,
+   KeyProviderOptions,
+   RatchetKeyRequest,
+   RatchetKeyResponse,
 diff --git a/node_modules/@livekit/rtc-node/src/e2ee.ts b/node_modules/@livekit/rtc-node/src/e2ee.ts
 index 2de0025..1ae9649 100644
 --- a/node_modules/@livekit/rtc-node/src/e2ee.ts
