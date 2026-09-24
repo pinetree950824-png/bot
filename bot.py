@@ -8,7 +8,7 @@ import subprocess
 import time
 from typing import Awaitable, Callable, Optional
 
-from nio import AsyncClient, InviteMemberEvent, MatrixRoom, RoomMessageText, RoomGetStateResponse
+from nio import AsyncClient, InviteMemberEvent, MatrixRoom, RoomMessageText, RoomGetStateResponse, SyncError
 
 from config import Config
 from audio_queue import AudioQueue
@@ -99,9 +99,18 @@ class IntegratedBot:
         self._notify_room_id: Optional[str] = None
         self.client.add_event_callback(self.on_message, RoomMessageText)
         self.client.add_event_callback(self.on_invite, InviteMemberEvent)
+        self.client.add_response_callback(self.on_sync_error, SyncError)
 
         self._command_handlers: dict[str, Callable[[MatrixRoom, str, str], Awaitable[None]]] = {}
         self._register_command_handlers()
+
+    async def on_sync_error(self, response: SyncError):
+        if "M_UNKNOWN_TOKEN" in str(response) or getattr(response, "status_code", None) == 401:
+            logger.error("=" * 60)
+            logger.error("[CRITICAL] Matrix access_token is invalid or expired (M_UNKNOWN_TOKEN).")
+            logger.error("[ACTION] Please obtain a new Access Token from Element and update config/config.toml.")
+            logger.error("=" * 60)
+            self.client.stop_sync_forever()
 
     async def _find_user_voice_room(self, sender: str) -> Optional[tuple[str, str]]:
         if not sender:
@@ -1885,7 +1894,17 @@ class IntegratedBot:
         self._run_startup_checks()
         logger.info("=" * 60)
 
-        await self.client.sync(timeout=30000, full_state=True)
+        initial_sync = await self.client.sync(timeout=30000, full_state=True)
+        if isinstance(initial_sync, SyncError):
+            if "M_UNKNOWN_TOKEN" in str(initial_sync) or getattr(initial_sync, "status_code", None) == 401:
+                logger.error("=" * 60)
+                logger.error("[CRITICAL] Matrix access_token is invalid or expired (M_UNKNOWN_TOKEN).")
+                logger.error("[ACTION] Please obtain a new Access Token from Element and update config/config.toml.")
+                logger.error("=" * 60)
+                raise RuntimeError("Matrix access_token is inactive or expired (M_UNKNOWN_TOKEN). Please update config/config.toml.")
+            logger.error(f"[ERROR] Matrix initial sync failed: {initial_sync.message}")
+            raise RuntimeError(f"Matrix initial sync failed: {initial_sync.message}")
+
         self.first_sync_done = True
         self._start_message_dispatcher()
         self._ensure_advance_watchdog()
