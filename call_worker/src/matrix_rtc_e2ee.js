@@ -177,7 +177,9 @@ class MatrixRtcE2eeController {
         const e2eeOptions = {
             keyProviderOptions: {
                 ratchetSalt: Buffer.from("LKFrameEncryptionKey"),
-                ratchetWindowSize: 16,
+                ratchetWindowSize: 10,
+                keyringSize: 256,
+                keyRingSize: 256,
                 failureTolerance: -1,
             },
             encryptionType: EncryptionType.GCM,

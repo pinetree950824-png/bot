@@ -91,7 +91,8 @@ async function runTests() {
         const lkOpts = controller.getLivekitEncryptionOptions();
         assert(lkOpts !== undefined);
         assert.strictEqual(lkOpts.encryptionType, EncryptionType.GCM);
-        assert.strictEqual(lkOpts.keyProviderOptions.ratchetWindowSize, 16);
+        assert.strictEqual(lkOpts.keyProviderOptions.ratchetWindowSize, 10);
+        assert.strictEqual(lkOpts.keyProviderOptions.keyringSize, 256);
 
         const joinOpts = controller.getJoinSessionOptions("matrix2_auto");
         assert.strictEqual(joinOpts.manageMediaKeys, true);
@@ -483,7 +484,8 @@ async function runTests() {
         assert(connectOptions.encryption !== undefined, "connectOptions must have encryption field");
         assert.strictEqual(connectOptions.encryption.encryptionType, EncryptionType.GCM);
         assert(connectOptions.encryption.keyProviderOptions !== undefined);
-        assert.strictEqual(connectOptions.encryption.keyProviderOptions.ratchetWindowSize, 16);
+        assert.strictEqual(connectOptions.encryption.keyProviderOptions.ratchetWindowSize, 10);
+        assert.strictEqual(connectOptions.encryption.keyProviderOptions.keyringSize, 256);
         assert.deepStrictEqual(connectOptions.encryption.keyProviderOptions.ratchetSalt, Buffer.from("LKFrameEncryptionKey"));
 
         // Also check getJoinSessionOptions
