@@ -1935,31 +1935,40 @@ class IntegratedBot:
         if event.sender == self.config.MATRIX_USER_ID or not self.first_sync_done:
             return
 
-        if getattr(self.client, "olm", None):
-            try:
-                decrypted = self.client.decrypt_event(event)
-                if isinstance(decrypted, RoomMessageText):
-                    await self.on_message(room, decrypted)
-                    return
-            except Exception:
-                pass
+        # Attempt immediate decryption (succeeds if we already have the session)
+        try:
+            decrypted = self.client.decrypt_event(event)
+            if isinstance(decrypted, RoomMessageText):
+                await self.on_message(room, decrypted)
+                return
+        except Exception:
+            pass
 
+        # Buffer for later retry when room key arrives
         now = time.time()
         self._pending_megolm_events[event.event_id] = (room, event, now)
         expired = [eid for eid, (_, _, ts) in self._pending_megolm_events.items() if now - ts > 120.0]
         for eid in expired:
             self._pending_megolm_events.pop(eid, None)
 
-        if getattr(self.client, "olm", None):
-            try:
-                if event.session_id not in getattr(self.client, "outgoing_key_requests", {}):
-                    await self.client.request_room_key(event)
-                    logger.info("[E2EE] Requested missing room key for session %s from %s", event.session_id, event.sender)
-            except Exception as exc:
-                logger.debug("[E2EE] request_room_key failed: %s", exc)
+        # Request the missing room key from the sender.
+        # Don't gate on self.client.olm truthy check — vodozemac makes
+        # the attribute exist but may be falsy in some states.
+        # request_room_key raises LocalProtocolError if already in flight.
+        try:
+            already_requested = event.session_id in getattr(self.client, "outgoing_key_requests", {})
+            if not already_requested:
+                await self.client.request_room_key(event)
+                logger.info(
+                    "[E2EE] Requested missing room key: session=%s sender=%s",
+                    event.session_id, event.sender,
+                )
+        except Exception as exc:
+            logger.debug("[E2EE] request_room_key failed: %s", exc)
+
 
     async def on_room_key(self, event):
-        if not self._pending_megolm_events or not getattr(self.client, "olm", None):
+        if not self._pending_megolm_events:
             return
 
         decrypted_ids = []
